@@ -146,15 +146,24 @@ async function getFitbitToken() {
 
 // --- Fitbit API ---
 
-async function fitbitGet(token, path) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Fitbit API error (${res.status}) ${path}: ${err}`);
+async function fitbitGet(token, path, retries = 3) {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const res = await fetch(`${API_BASE}${path}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 429) {
+      const retryAfter = Number(res.headers.get("retry-after") || 60);
+      console.log(`Rate limited on ${path}, waiting ${retryAfter}s (attempt ${attempt + 1}/${retries})`);
+      await new Promise((r) => setTimeout(r, retryAfter * 1000));
+      continue;
+    }
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Fitbit API error (${res.status}) ${path}: ${err}`);
+    }
+    return res.json();
   }
-  return res.json();
+  throw new Error(`Fitbit API rate limited after ${retries} retries: ${path}`);
 }
 
 function dateStr(daysAgo) {
@@ -186,6 +195,7 @@ async function getSleepLogs(token, startDate, endDate) {
     allSleep = allSleep.concat(data.sleep || []);
 
     cursor.setDate(chunkEnd.getDate() + 1);
+    if (cursor <= end) await new Promise((r) => setTimeout(r, 1000));
   }
 
   return allSleep;
