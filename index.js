@@ -166,11 +166,29 @@ function dateStr(daysAgo) {
 // getActivitySummaries removed — using time series endpoints instead
 
 async function getSleepLogs(token, startDate, endDate) {
-  const data = await fitbitGet(
-    token,
-    `/1.2/user/-/sleep/date/${startDate}/${endDate}.json`
-  );
-  return data.sleep || [];
+  // Fitbit Sleep API limits date range to 100 days per request
+  const MAX_DAYS = 100;
+  let allSleep = [];
+  let cursor = new Date(startDate);
+  const end = new Date(endDate);
+
+  while (cursor <= end) {
+    const chunkEnd = new Date(cursor);
+    chunkEnd.setDate(chunkEnd.getDate() + MAX_DAYS - 1);
+    if (chunkEnd > end) chunkEnd.setTime(end.getTime());
+
+    const from = cursor.toISOString().split("T")[0];
+    const to = chunkEnd.toISOString().split("T")[0];
+    const data = await fitbitGet(
+      token,
+      `/1.2/user/-/sleep/date/${from}/${to}.json`
+    );
+    allSleep = allSleep.concat(data.sleep || []);
+
+    cursor.setDate(chunkEnd.getDate() + 1);
+  }
+
+  return allSleep;
 }
 
 async function getExerciseLogs(token, afterDate) {
