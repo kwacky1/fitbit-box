@@ -6,105 +6,95 @@ const fs = require("fs");
 const {
   GIST_ID: gistId,
   GH_TOKEN: githubToken,
-  FITBIT_CLIENT_ID: clientId,
-  FITBIT_CLIENT_SECRET: clientSecret,
-  FITBIT_REFRESH_TOKEN: refreshToken,
+  GOOGLE_CLIENT_ID: clientId,
+  GOOGLE_CLIENT_SECRET: clientSecret,
+  GOOGLE_REFRESH_TOKEN: refreshToken,
   UNITS: units,
 } = process.env;
 
-const API_BASE = "https://api.fitbit.com";
-const AUTH_CACHE_FILE = "fitbit-auth.json";
+const API_BASE = "https://health.googleapis.com/v4";
+const AUTH_CACHE_FILE = "google-auth.json";
 
 const octokit = new Octokit({ auth: `token ${githubToken}` });
 
 async function main() {
-  const token = await getFitbitToken();
-  const today = new Date();
-  const ytdStart = `${today.getFullYear()}-01-01`;
-  const todayStr = today.toISOString().split("T")[0];
+  const token = await getGoogleToken();
+  const now = new Date();
+  const ytdStart = `${now.getFullYear()}-01-01T00:00:00Z`;
+  const todayEnd = new Date(now.getTime() + 86400000).toISOString().split("T")[0] + "T00:00:00Z";
 
-  // Fetch time series for YTD (covers 7d and 30d too)
-  const [steps, distance, fairlyActive, veryActive, sleep, exercises] =
-    await Promise.all([
-      fitbitGet(token, `/1/user/-/activities/steps/date/${ytdStart}/${todayStr}.json`),
-      fitbitGet(token, `/1/user/-/activities/distance/date/${ytdStart}/${todayStr}.json`),
-      fitbitGet(token, `/1/user/-/activities/minutesFairlyActive/date/${ytdStart}/${todayStr}.json`),
-      fitbitGet(token, `/1/user/-/activities/minutesVeryActive/date/${ytdStart}/${todayStr}.json`),
-      getSleepLogs(token, ytdStart, todayStr),
-      getExerciseLogs(token, ytdStart),
-    ]);
+  const [stepPoints, sleepPoints, exercisePoints] = await Promise.all([
+    getDataPoints(token, "steps", ytdStart, todayEnd),
+    getDataPoints(token, "sleep", ytdStart, todayEnd),
+    getDataPoints(token, "exercise", ytdStart, todayEnd),
+  ]);
 
-  const sumLast = (series, days) =>
-    series.slice(-days).reduce((s, e) => s + Number(e.value), 0);
-
-  const stepsSeries = steps["activities-steps"] || [];
-  const distSeries = distance["activities-distance"] || [];
-  const fairlySeries = fairlyActive["activities-minutesFairlyActive"] || [];
-  const verySeries = veryActive["activities-minutesVeryActive"] || [];
-
-  const activeMinSeries = fairlySeries.map((e, i) => ({
-    value: Number(e.value) + Number(verySeries[i]?.value || 0),
+  // Steps: sum the count field per interval
+  const stepsWithTime = stepPoints.map((p) => ({
+    startTime: p.steps.interval.startTime,
+    value: parseInt(p.steps.count, 10) || 0,
   }));
 
-  const sleepAvg = (logs, days) => {
-    const cutoff = dateStr(days);
-    const recent = logs.filter((s) => s.dateOfSleep >= cutoff && s.isMainSleep);
+  // Sleep: extract minutesAsleep from summary, skip naps
+  const sleepSessions = sleepPoints.map((p) => ({
+    startTime: p.sleep.interval.startTime,
+    minutesAsleep: parseInt(p.sleep.summary?.minutesAsleep, 10) || 0,
+    isMainSleep: true, // Google Health doesn't mark naps the same way; all sessions treated as main
+  }));
+
+  // Exercise: map types and extract distance/duration
+  const exercises = normaliseExercises(exercisePoints);
+
+  const sumByPeriod = (points, days) => {
+    const cutoff = new Date(now.getTime() - days * 86400000);
+    return points
+      .filter((p) => new Date(p.startTime) >= cutoff)
+      .reduce((sum, p) => sum + p.value, 0);
+  };
+  const sumAll = (points) => points.reduce((sum, p) => sum + p.value, 0);
+
+  const sleepAvg = (days) => {
+    const cutoff = new Date(now.getTime() - days * 86400000);
+    const recent = sleepSessions.filter((s) => new Date(s.startTime) >= cutoff);
     if (recent.length === 0) return 0;
-    return Math.round(
-      recent.reduce((sum, s) => sum + (s.minutesAsleep || 0), 0) / recent.length
-    );
+    return Math.round(recent.reduce((sum, s) => sum + s.minutesAsleep, 0) / recent.length);
   };
 
-  const countExercises = (activities, days) => {
-    const cutoff = dateStr(days);
-    return activities.filter((a) => (a.startTime || "").substring(0, 10) >= cutoff);
-  };
-
-  const allExercises = exercises.activities || [];
-
-  // Extract date from startTime (ISO datetime)
-  const activityDate = (a) => (a.startTime || "").substring(0, 10);
-
-  // Group activities by name, bucketed by period
-  const groupActivities = (activities, days) => {
-    const cutoff = days ? dateStr(days) : "0000-00-00";
+  const groupExercises = (days) => {
+    const cutoff = days ? new Date(now.getTime() - days * 86400000) : new Date("2000-01-01");
     const groups = {};
-    for (const a of activities) {
-      if (activityDate(a) < cutoff) continue;
-      const name = a.activityName || "Other";
+    for (const ex of exercises) {
+      if (new Date(ex.startTime) < cutoff) continue;
+      const name = ex.activityType;
       if (!groups[name]) groups[name] = { count: 0, distance: 0 };
       groups[name].count++;
-      groups[name].distance += a.distance || 0;
+      groups[name].distance += ex.distanceKm;
     }
     return groups;
   };
 
-  const groups7d = groupActivities(allExercises, 7);
-  const groups30d = groupActivities(allExercises, 30);
-  const groupsYtd = groupActivities(allExercises, null);
-
-  // Get all unique activity names, sorted by YTD count descending
-  const activityNames = [...new Set(allExercises.map((a) => a.activityName || "Other"))]
-    .sort((a, b) => (groupsYtd[b]?.count || 0) - (groupsYtd[a]?.count || 0));
+  // Derive active minutes from exercise activeDuration
+  const activeMinWithTime = exercises.map((ex) => ({
+    startTime: ex.startTime,
+    value: ex.activeMinutes,
+  }));
 
   const stats = {
-    steps: [sumLast(stepsSeries, 7), sumLast(stepsSeries, 30), sumLast(stepsSeries, stepsSeries.length)],
-    distance: [sumLast(distSeries, 7), sumLast(distSeries, 30), sumLast(distSeries, distSeries.length)],
-    activeMin: [sumLast(activeMinSeries, 7), sumLast(activeMinSeries, 30), sumLast(activeMinSeries, activeMinSeries.length)],
-    sleepAvg: [sleepAvg(sleep, 7), sleepAvg(sleep, 30), sleepAvg(sleep, 365)],
-    activityNames,
-    groups7d,
-    groups30d,
-    groupsYtd,
+    steps: [sumByPeriod(stepsWithTime, 7), sumByPeriod(stepsWithTime, 30), sumAll(stepsWithTime)],
+    activeMin: [sumByPeriod(activeMinWithTime, 7), sumByPeriod(activeMinWithTime, 30), sumAll(activeMinWithTime)],
+    sleepAvg: [sleepAvg(7), sleepAvg(30), sleepAvg(365)],
+    groups7d: groupExercises(7),
+    groups30d: groupExercises(30),
+    groupsYtd: groupExercises(null),
   };
 
   await updateGist(stats);
   console.log("Gist updated successfully.");
 }
 
-// --- Fitbit Auth ---
+// --- Google OAuth ---
 
-async function getFitbitToken() {
+async function getGoogleToken() {
   let cache = { refreshToken };
 
   try {
@@ -114,29 +104,27 @@ async function getFitbitToken() {
     // No cache yet, use env var
   }
 
-  const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString(
-    "base64"
-  );
-  const res = await fetch(`${API_BASE}/oauth2/token`, {
+  const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
-    headers: {
-      Authorization: `Basic ${basicAuth}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: cache.refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
     }),
   });
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Fitbit token refresh failed (${res.status}): ${err}`);
+    throw new Error(`Google token refresh failed (${res.status}): ${err}`);
   }
 
   const data = await res.json();
   cache.accessToken = data.access_token;
-  cache.refreshToken = data.refresh_token;
+  if (data.refresh_token) {
+    cache.refreshToken = data.refresh_token;
+  }
 
   fs.writeFileSync(AUTH_CACHE_FILE, JSON.stringify(cache));
   console.log("Token refreshed successfully.");
@@ -144,87 +132,101 @@ async function getFitbitToken() {
   return cache.accessToken;
 }
 
-// --- Fitbit API ---
+// --- Google Health API ---
 
-async function fitbitGet(token, path, retries = 3) {
-  for (let attempt = 0; attempt < retries; attempt++) {
-    const res = await fetch(`${API_BASE}${path}`, {
+// Filter field varies by data type
+const FILTER_FIELDS = {
+  steps: "steps.interval.start_time",
+  sleep: "sleep.interval.end_time",
+  exercise: null, // no filter support — paginate and filter client-side
+};
+
+async function getDataPoints(token, dataType, startTime, endTime) {
+  const filterField = FILTER_FIELDS[dataType];
+  let allPoints = [];
+  let pageToken = null;
+
+  do {
+    const params = new URLSearchParams({ pageSize: "10000" });
+    if (filterField) {
+      params.set("filter", `${filterField} >= "${startTime}" AND ${filterField} < "${endTime}"`);
+    }
+    if (pageToken) params.set("pageToken", pageToken);
+
+    const url = `${API_BASE}/users/me/dataTypes/${dataType}/dataPoints?${params}`;
+    const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (res.status === 429) {
-      const retryAfter = Number(res.headers.get("retry-after") || 60);
-      console.log(`Rate limited on ${path}, waiting ${retryAfter}s (attempt ${attempt + 1}/${retries})`);
-      await new Promise((r) => setTimeout(r, retryAfter * 1000));
-      continue;
-    }
+
     if (!res.ok) {
       const err = await res.text();
-      throw new Error(`Fitbit API error (${res.status}) ${path}: ${err}`);
+      throw new Error(`Google Health API error (${res.status}) ${dataType}: ${err}`);
     }
-    return res.json();
-  }
-  throw new Error(`Fitbit API rate limited after ${retries} retries: ${path}`);
-}
 
-function dateStr(daysAgo) {
-  const d = new Date();
-  d.setDate(d.getDate() - daysAgo);
-  return d.toISOString().split("T")[0];
-}
+    const data = await res.json();
+    const points = data.dataPoints || [];
+    allPoints = allPoints.concat(points);
+    pageToken = data.nextPageToken || null;
 
-// getActivitySummaries removed — using time series endpoints instead
+    // For unfiltered types, stop once we've passed the date range
+    // (data comes in reverse chronological order)
+    if (!filterField && points.length > 0) {
+      const lastPoint = points[points.length - 1];
+      const lastTime = extractStartTime(lastPoint, dataType);
+      if (lastTime && lastTime < startTime) break;
+    }
+  } while (pageToken);
 
-async function getSleepLogs(token, startDate, endDate) {
-  // Fitbit Sleep API limits date range to 100 days per request
-  const MAX_DAYS = 100;
-  let allSleep = [];
-  let cursor = new Date(startDate);
-  const end = new Date(endDate);
-
-  while (cursor <= end) {
-    const chunkEnd = new Date(cursor);
-    chunkEnd.setDate(chunkEnd.getDate() + MAX_DAYS - 1);
-    if (chunkEnd > end) chunkEnd.setTime(end.getTime());
-
-    const from = cursor.toISOString().split("T")[0];
-    const to = chunkEnd.toISOString().split("T")[0];
-    const data = await fitbitGet(
-      token,
-      `/1.2/user/-/sleep/date/${from}/${to}.json`
-    );
-    allSleep = allSleep.concat(data.sleep || []);
-
-    cursor.setDate(chunkEnd.getDate() + 1);
-    if (cursor <= end) await new Promise((r) => setTimeout(r, 1000));
+  // Client-side date filtering for types that don't support server-side filtering
+  if (!filterField) {
+    allPoints = allPoints.filter((p) => {
+      const t = extractStartTime(p, dataType);
+      return t && t >= startTime && t < endTime;
+    });
   }
 
-  return allSleep;
+  return allPoints;
 }
 
-async function getExerciseLogs(token, afterDate) {
-  let allActivities = [];
-  let hasMore = true;
-  let offset = 0;
+function extractStartTime(point, dataType) {
+  if (dataType === "exercise") return point.exercise?.interval?.startTime;
+  if (dataType === "sleep") return point.sleep?.interval?.startTime;
+  if (dataType === "steps") return point.steps?.interval?.startTime;
+  return null;
+}
 
-  while (hasMore) {
-    const data = await fitbitGet(
-      token,
-      `/1/user/-/activities/list.json?afterDate=${afterDate}&sort=asc&limit=100&offset=${offset}`
-    );
-    const activities = data.activities || [];
-    allActivities = allActivities.concat(activities);
-    hasMore = data.pagination?.next != null && activities.length === 100;
-    offset += 100;
-  }
+// --- Data Normalisation ---
 
-  return { activities: allActivities };
+function normaliseExercises(points) {
+  const TYPE_MAP = {
+    WALKING: "Walk",
+    BIKING: "Bike",
+    CYCLING: "Bike",
+    STRENGTH_TRAINING: "Strength training",
+    WEIGHTLIFTING: "Strength training",
+    WORKOUT: "Strength training",
+  };
+
+  return points.map((p) => {
+    const ex = p.exercise || {};
+    const rawType = ex.exerciseType || "OTHER";
+    const metrics = ex.metricsSummary || {};
+    // distanceMillimeters is in mm
+    const distKm = (metrics.distanceMillimeters || 0) / 1_000_000;
+    // activeDuration is like "1433s" or "1433.552s"
+    const durationSec = parseFloat(ex.activeDuration) || 0;
+    const activeMin = Math.round(durationSec / 60);
+
+    return {
+      startTime: ex.interval?.startTime,
+      activityType: TYPE_MAP[rawType] || rawType,
+      distanceKm: distKm,
+      activeMinutes: activeMin,
+    };
+  });
 }
 
 // --- Gist Formatting ---
-
-function formatNumber(n) {
-  return n.toLocaleString("en-AU");
-}
 
 function formatDistance(km) {
   if (units === "miles") {
@@ -266,21 +268,35 @@ async function updateGist(stats) {
   // Merge activity groups by display label
   const merged = {};
   for (const [name, cfg] of Object.entries(ACTIVITY_MAP)) {
-    if (!merged[cfg.label]) merged[cfg.label] = { emoji: cfg.emoji, d7: 0, d30: 0, ytd: 0 };
+    if (!merged[cfg.label]) merged[cfg.label] = { emoji: cfg.emoji, d7: 0, d30: 0, ytd: 0, dist7: 0, dist30: 0, distYtd: 0 };
     merged[cfg.label].d7 += stats.groups7d[name]?.count || 0;
     merged[cfg.label].d30 += stats.groups30d[name]?.count || 0;
     merged[cfg.label].ytd += stats.groupsYtd[name]?.count || 0;
+    merged[cfg.label].dist7 += stats.groups7d[name]?.distance || 0;
+    merged[cfg.label].dist30 += stats.groups30d[name]?.distance || 0;
+    merged[cfg.label].distYtd += stats.groupsYtd[name]?.distance || 0;
   }
 
   for (const [label, data] of Object.entries(merged)) {
-    lines.push(
-      formatLine(
-        `${data.emoji} ${label}`,
-        String(data.d7),
-        String(data.d30),
-        String(data.ytd)
-      )
-    );
+    if (label === "Cycling") {
+      lines.push(
+        formatLine(
+          `${data.emoji} ${label}`,
+          formatDistance(data.dist7),
+          formatDistance(data.dist30),
+          formatDistance(data.distYtd)
+        )
+      );
+    } else {
+      lines.push(
+        formatLine(
+          `${data.emoji} ${label}`,
+          String(data.d7),
+          String(data.d30),
+          String(data.ytd)
+        )
+      );
+    }
   }
 
   const header = ` ${visPadEnd("", 14)} ${visPadStart("7 days", 9)} ${visPadStart("30 days", 9)} ${visPadStart("YTD", 9)}`;
@@ -292,7 +308,7 @@ async function updateGist(stats) {
       gist_id: gistId,
       files: {
         [filename]: {
-          filename: "🏃 Fitbit Stats",
+          filename: "🏃 Fitness Stats",
           content,
         },
       },
@@ -304,13 +320,12 @@ async function updateGist(stats) {
 }
 
 // Visual width of a string in a monospace terminal/gist
-// Emojis (surrogate pairs) = 2 cells, variation selectors/ZWJ = 0 cells
 function visualWidth(str) {
   let width = 0;
   for (let i = 0; i < str.length; i++) {
     const code = str.charCodeAt(i);
-    if (code === 0xfe0f || code === 0xfe0e || code === 0x200d) continue; // variation selectors, ZWJ
-    if (code >= 0xd800 && code <= 0xdbff) { width += 2; i++; continue; } // surrogate pair = emoji
+    if (code === 0xfe0f || code === 0xfe0e || code === 0x200d) continue;
+    if (code >= 0xd800 && code <= 0xdbff) { width += 2; i++; continue; }
     width++;
   }
   return width;

@@ -1,32 +1,33 @@
 # fitbit-box 🏃
 
-Display your [Fitbit](https://www.fitbit.com/) activity stats in a pinned GitHub gist.
+Display your [Google Health](https://health.google.com/) (formerly Fitbit) activity stats in a pinned GitHub gist.
 
-Shows 7-day and 30-day summaries for steps, distance, active minutes, sleep, and workouts.
+Shows 7-day, 30-day, and YTD summaries for sleep, walks, cycling, and workouts.
 
 ```
-                  7 days   30 days
-🦶 Steps         52,340   214,500
-📏 Distance       38.2km   156.1km
-⚡ Active Min        210       845
-😴 Sleep Avg      7h12m     6h58m
-🏋️ Workouts           4        16
+                 7 days   30 days       YTD
+😴 Sleep Avg      7h56m     6h21m     7h13m
+🚶 Walks             26        57       217
+🚴 Cycling       50.9km   127.3km  1240.5km
+🏋️ Workouts           4        15        42
 ```
 
 ## Setup
 
-### 1. Create a Fitbit App
+### 1. Create a Google Cloud Project
 
-1. Go to [dev.fitbit.com](https://dev.fitbit.com/apps/new) and register a new app
-2. Set **OAuth 2.0 Application Type** to **Personal**
-3. Set **Redirect URL** to `http://localhost`
-4. Note your **Client ID** and **Client Secret**
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create a new project
+2. Enable the **Google Health API** (`health.googleapis.com`)
+3. Configure the **OAuth consent screen** (External, add yourself as a test user)
+4. Create **OAuth 2.0 credentials** (Web application type)
+5. Add `http://localhost` as an authorised redirect URI
+6. Note your **Client ID** and **Client Secret**
 
-### 2. Get Your Fitbit Refresh Token
+### 2. Get Your Google Refresh Token
 
 ```bash
 cp sample.env .env
-# Edit .env with your FITBIT_CLIENT_ID and FITBIT_CLIENT_SECRET
+# Edit .env with your GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET
 
 npm install
 node setup.js
@@ -49,13 +50,15 @@ In your fork/copy of this repo, go to **Settings > Secrets and variables > Actio
 
 | Secret | Description |
 |--------|-------------|
-| `FITBIT_CLIENT_ID` | Your Fitbit app client ID |
-| `FITBIT_CLIENT_SECRET` | Your Fitbit app client secret |
-| `FITBIT_REFRESH_TOKEN` | The refresh token from step 2 |
+| `GOOGLE_CLIENT_ID` | Your Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | Your Google OAuth client secret |
+| `GOOGLE_REFRESH_TOKEN` | The refresh token from step 2 |
 | `GIST_ID` | The ID of your GitHub gist |
 | `GH_TOKEN` | GitHub personal access token with `gist` scope |
 
 The workflow runs every 6 hours automatically, or you can trigger it manually from the Actions tab.
+
+> **Note:** If your OAuth consent screen is in "testing" mode, refresh tokens expire after 7 days. Publish the app to "production" in Cloud Console for persistent tokens (no verification needed for personal use with <100 users).
 
 ## Local Development
 

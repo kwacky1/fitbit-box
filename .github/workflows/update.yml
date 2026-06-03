@@ -1,4 +1,4 @@
-name: Update Fitbit Gist
+name: Update Fitness Gist
 
 on:
   schedule:
@@ -24,7 +24,7 @@ jobs:
         env:
           GIST_ID: ${{ secrets.GIST_ID }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          FITBIT_CLIENT_ID: ${{ secrets.FITBIT_CLIENT_ID }}
-          FITBIT_CLIENT_SECRET: ${{ secrets.FITBIT_CLIENT_SECRET }}
-          FITBIT_REFRESH_TOKEN: ${{ secrets.FITBIT_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
           UNITS: km
