@@ -15,6 +15,12 @@ const {
 const API_BASE = "https://health.googleapis.com/v4";
 const AUTH_CACHE_FILE = "google-auth.json";
 
+// One-off YTD cycling baseline (km) for Jan–Feb 2026 outdoor rides that were
+// tracked on Strava but never synced to Google Health. Equals
+// Strava(Jan+Feb) − GoogleHealth(Jan+Feb) = 410.04 − 40.85. Only applied to the
+// cycling YTD column. Reset to 0 at the start of 2027.
+const CYCLING_YTD_BASELINE_KM = 369.19;
+
 const octokit = new Octokit({ auth: `token ${githubToken}` });
 
 async function main() {
@@ -284,7 +290,7 @@ async function updateGist(stats) {
           `${data.emoji} ${label}`,
           formatDistance(data.dist7),
           formatDistance(data.dist30),
-          formatDistance(data.distYtd)
+          formatDistance(data.distYtd + CYCLING_YTD_BASELINE_KM)
         )
       );
     } else {
