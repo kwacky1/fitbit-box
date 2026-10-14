@@ -147,27 +147,59 @@ const FILTER_FIELDS = {
   exercise: null, // no filter support — paginate and filter client-side
 };
 
+// Google's exercise dataPoints endpoint has no server-side time filter, so it
+// must return unfiltered pages. A large pageSize appears to trigger
+// intermittent 500 INTERNAL errors on that endpoint, so it uses a smaller
+// page size than the filtered types.
+const PAGE_SIZES = {
+  steps: "10000",
+  sleep: "10000",
+  exercise: "100",
+};
+
+const MAX_RETRIES = 4;
+const RETRY_BASE_DELAY_MS = 1000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithRetry(url, options) {
+  let lastErr;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const res = await fetch(url, options);
+    if (res.ok) return res;
+
+    const status = res.status;
+    const err = await res.text();
+    lastErr = new Error(`Google Health API error (${status}): ${err}`);
+
+    // Only retry on transient server-side errors; fail fast on 4xx.
+    if (status < 500 || attempt === MAX_RETRIES) throw lastErr;
+
+    const delay = RETRY_BASE_DELAY_MS * 2 ** attempt;
+    console.warn(`Request failed with ${status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})...`);
+    await sleep(delay);
+  }
+  throw lastErr;
+}
+
 async function getDataPoints(token, dataType, startTime, endTime) {
   const filterField = FILTER_FIELDS[dataType];
   let allPoints = [];
   let pageToken = null;
 
   do {
-    const params = new URLSearchParams({ pageSize: "10000" });
+    const params = new URLSearchParams({ pageSize: PAGE_SIZES[dataType] || "10000" });
     if (filterField) {
       params.set("filter", `${filterField} >= "${startTime}" AND ${filterField} < "${endTime}"`);
     }
     if (pageToken) params.set("pageToken", pageToken);
 
     const url = `${API_BASE}/users/me/dataTypes/${dataType}/dataPoints?${params}`;
-    const res = await fetch(url, {
+    const res = await fetchWithRetry(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
-
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Google Health API error (${res.status}) ${dataType}: ${err}`);
-    }
 
     const data = await res.json();
     const points = data.dataPoints || [];
