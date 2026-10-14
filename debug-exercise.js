@@ -31,6 +31,27 @@ async function main() {
     console.log(`page=${page} status=${res.status} bodyLen=${text.length}`);
     if (!res.ok) {
       console.log("error body:", text.slice(0, 1000));
+      // Try smaller pageSizes against the SAME token to see if a smaller
+      // batch steps around whatever is breaking the server.
+      for (const smallerSize of [10, 5, 2, 1]) {
+        const p2 = new URLSearchParams({ pageSize: String(smallerSize) });
+        if (pageToken) p2.set("pageToken", pageToken);
+        const url2 = `https://health.googleapis.com/v4/users/me/dataTypes/exercise/dataPoints?${p2}`;
+        const res2 = await fetch(url2, { headers: { Authorization: `Bearer ${token}` } });
+        const text2 = await res2.text();
+        console.log(`  retry pageSize=${smallerSize} status=${res2.status} bodyLen=${text2.length}`);
+        if (res2.ok) {
+          const d2 = JSON.parse(text2);
+          const pts = d2.dataPoints || [];
+          console.log(
+            "  points:",
+            pts.map((pp) => ({ startTime: pp.exercise?.interval?.startTime, type: pp.exercise?.exerciseType }))
+          );
+          break;
+        } else {
+          console.log("  retry error body:", text2.slice(0, 300));
+        }
+      }
       break;
     }
     const data = JSON.parse(text);
