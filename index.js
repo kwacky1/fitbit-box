@@ -148,13 +148,16 @@ const FILTER_FIELDS = {
 };
 
 // Google's exercise dataPoints endpoint has no server-side time filter, so it
-// must return unfiltered pages. A large pageSize appears to trigger
-// intermittent 500 INTERNAL errors on that endpoint, so it uses a smaller
-// page size than the filtered types.
+// must paginate through unfiltered pages. One of the older sessions in the
+// account's history consistently makes the server return a 500 once
+// pagination reaches it, regardless of pageSize or retries. A smaller
+// pageSize at least reaches further back before hitting it, so more of the
+// year's data is captured before getDataPoints falls back to a partial
+// result (see the catch block below).
 const PAGE_SIZES = {
   steps: "10000",
   sleep: "10000",
-  exercise: "100",
+  exercise: "10",
 };
 
 const MAX_RETRIES = 4;
@@ -197,9 +200,22 @@ async function getDataPoints(token, dataType, startTime, endTime) {
     if (pageToken) params.set("pageToken", pageToken);
 
     const url = `${API_BASE}/users/me/dataTypes/${dataType}/dataPoints?${params}`;
-    const res = await fetchWithRetry(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    let res;
+    try {
+      res = await fetchWithRetry(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch (error) {
+      // Google's exercise dataPoints endpoint has been observed to return a
+      // persistent 500 on a specific older page, unrelated to request shape
+      // or retries. Rather than fail the whole run, fall back to whatever
+      // (most-recent) data points were already collected.
+      if (allPoints.length > 0) {
+        console.warn(`Pagination for ${dataType} stopped early after a persistent error: ${error.message}`);
+        break;
+      }
+      throw new Error(`Google Health API error for ${dataType}: ${error.message}`);
+    }
 
     const data = await res.json();
     const points = data.dataPoints || [];

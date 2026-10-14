@@ -20,7 +20,7 @@ jobs:
         run: npm ci
 
       - name: Update gist
-        run: node debug-exercise.js
+        run: node index.js
         env:
           GIST_ID: ${{ secrets.GIST_ID }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
