@@ -20,7 +20,8 @@ async function main() {
 
   let pageToken = null;
   let page = 0;
-  const pageSize = 20;
+  const pageSize = 10;
+  let totalPoints = 0;
   do {
     page++;
     const params = new URLSearchParams({ pageSize: String(pageSize) });
@@ -28,53 +29,23 @@ async function main() {
     const url = `https://health.googleapis.com/v4/users/me/dataTypes/exercise/dataPoints?${params}`;
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     const text = await res.text();
-    console.log(`page=${page} status=${res.status} bodyLen=${text.length}`);
     if (!res.ok) {
-      console.log("error body:", text.slice(0, 1000));
-      // Try smaller pageSizes against the SAME token to see if a smaller
-      // batch steps around whatever is breaking the server.
-      for (const smallerSize of [10, 5, 2, 1]) {
-        const p2 = new URLSearchParams({ pageSize: String(smallerSize) });
-        if (pageToken) p2.set("pageToken", pageToken);
-        const url2 = `https://health.googleapis.com/v4/users/me/dataTypes/exercise/dataPoints?${p2}`;
-        const res2 = await fetch(url2, { headers: { Authorization: `Bearer ${token}` } });
-        const text2 = await res2.text();
-        console.log(`  retry pageSize=${smallerSize} status=${res2.status} bodyLen=${text2.length}`);
-        if (res2.ok) {
-          const d2 = JSON.parse(text2);
-          const pts = d2.dataPoints || [];
-          console.log(
-            "  points:",
-            pts.map((pp) => ({ startTime: pp.exercise?.interval?.startTime, type: pp.exercise?.exerciseType }))
-          );
-          break;
-        } else {
-          console.log("  retry error body:", text2.slice(0, 300));
-        }
-      }
+      console.log(`page=${page} status=${res.status} bodyLen=${text.length}`);
+      console.log("error body:", text.slice(0, 500));
       break;
     }
     const data = JSON.parse(text);
     const points = data.dataPoints || [];
-    if (points.length > 0) {
-      const first = points[0];
-      const last = points[points.length - 1];
-      console.log(
-        "first:",
-        first.exercise?.interval?.startTime,
-        first.exercise?.exerciseType,
-        "last:",
-        last.exercise?.interval?.startTime,
-        last.exercise?.exerciseType
-      );
-    }
+    totalPoints += points.length;
+    const last = points[points.length - 1];
+    console.log(`page=${page} status=200 count=${points.length} total=${totalPoints} lastTime=${last?.exercise?.interval?.startTime}`);
     pageToken = data.nextPageToken || null;
-    console.log("nextPageToken present:", !!pageToken);
-    if (page > 60) {
-      console.log("Stopping after 60 pages for safety");
+    if (page > 200) {
+      console.log("Stopping after 200 pages for safety");
       break;
     }
   } while (pageToken);
+  console.log("DONE. total points:", totalPoints);
 }
 
 main().catch((e) => console.error("FAILED", e));
