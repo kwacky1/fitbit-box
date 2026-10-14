@@ -20,7 +20,7 @@ async function main() {
 
   let pageToken = null;
   let page = 0;
-  const pageSize = 10;
+  const pageSize = 1;
   let totalPoints = 0;
   do {
     page++;
@@ -37,11 +37,13 @@ async function main() {
     const data = JSON.parse(text);
     const points = data.dataPoints || [];
     totalPoints += points.length;
-    const last = points[points.length - 1];
-    console.log(`page=${page} status=200 count=${points.length} total=${totalPoints} lastTime=${last?.exercise?.interval?.startTime}`);
+    const p0 = points[0];
+    console.log(
+      `page=${page} total=${totalPoints} startTime=${p0?.exercise?.interval?.startTime} endTime=${p0?.exercise?.interval?.endTime} type=${p0?.exercise?.exerciseType} metrics=${JSON.stringify(p0?.exercise?.metricsSummary)}`
+    );
     pageToken = data.nextPageToken || null;
-    if (page > 200) {
-      console.log("Stopping after 200 pages for safety");
+    if (page > 160) {
+      console.log("Stopping after 160 pages for safety");
       break;
     }
   } while (pageToken);
